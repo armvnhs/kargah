@@ -21,10 +21,13 @@ server.py (+ start.bat)          سرور محلی اختیاری برای حا�
 ## اجرا
 
 ### آنلاین
-1. ریپو را روی GitHub منتشر کن و در **Settings → Pages** شاخهٔ `main` و پوشهٔ `/` را انتخاب کن.
-2. آدرس نهایی را در Supabase → Authentication → URL Configuration به‌عنوان Site URL بگذار:
-   `https://<user>.github.io/kargah/`
-3. صفحه را باز کن، «ساخت حساب» را بزن و وارد شو. از این به بعد هر دستگاهی با همان حساب همان داده‌ها را می‌بیند.
+آدرس نهایی: **https://armvnhs.ir/kargah/**
+
+1. ریپو: `github.com/armvnhs/kargah` — Pages از شاخهٔ `main` و پوشهٔ `/` منتشر می‌شود.
+2. دامنهٔ `armvnhs.ir` روی ریپوی کاربری (`armvnhs.github.io`) تنظیم است، پس این پروژه خودکار زیر
+   `armvnhs.ir/kargah/` سرو می‌شود.
+3. در Supabase → Authentication → URL Configuration همین آدرس Site URL است.
+4. صفحه را باز کن، «ساخت حساب» را بزن و وارد شو. از این به بعد هر دستگاهی با همان حساب همان داده‌ها را می‌بیند.
 
 ### محلی (بدون حساب)
 ```bash
