@@ -646,7 +646,7 @@
         var line = document.getElementById('account-line');
         if (line) line.hidden = true;
         showGate(
-          error && error.status === 401
+          error && (error.status === 401 || error.status === 403)
             ? 'نشست منقضی شد؛ دوباره وارد شو.'
             : 'اتصال به ابر ممکن نشد؛ اینترنت را چک کن.',
         );
