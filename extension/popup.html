@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="head">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 8.5A2.5 2.5 0 0 1 6.5 6H18a2 2 0 0 1 2 2v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17Z" />
+          <path d="M4 9.5h13.5a1.5 1.5 0 0 1 1.5 1.5v4.5" />
+        </svg>
+      </span>
+      <div class="head-text">
+        <strong>کارگاه</strong>
+        <span>ثبت سریع تراکنش</span>
+      </div>
+    </header>
+
+    <form id="quick-form">
+      <div class="kind-switch" role="group" aria-label="نوع تراکنش">
+        <button type="button" class="kind on" data-kind="expense">هزینه</button>
+        <button type="button" class="kind" data-kind="income">درآمد</button>
+      </div>
+
+      <label>
+        <span>شرح</span>
+        <input id="title" type="text" placeholder="مثلاً نان و میوه" autocomplete="off" required />
+      </label>
+
+      <label>
+        <span>مبلغ (تومان)</span>
+        <input id="amount" type="number" min="1" inputmode="numeric" placeholder="۰" required />
+      </label>
+
+      <label>
+        <span>دسته</span>
+        <select id="category"></select>
+      </label>
+
+      <button type="submit" class="save">ثبت</button>
+      <p class="hint" id="hint" hidden></p>
+    </form>
+
+    <footer class="foot">
+      <button type="button" id="open-app" class="ghost">باز کردن داشبورد</button>
+      <span class="queue" id="queue">صف: ۰</span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -20,14 +20,17 @@
     review: 'بازبینی',
     done: 'تحویل شده',
   };
-  var INCOME_CATEGORIES = ['پروژه', 'پیش‌پرداخت', 'فروش فایل', 'مشاوره', 'سایر'];
+  var INCOME_CATEGORIES = ['حقوق', 'پروژه', 'فروش', 'مشاوره', 'سود سرمایه', 'هدیه', 'سایر'];
   var EXPENSE_CATEGORIES = [
-    'نرم‌افزار و اشتراک',
-    'ابزار و سخت‌افزار',
-    'تبلیغات',
-    'آموزش',
-    'اجاره و دفتر',
+    'مسکن و اجاره',
+    'خوراک و خرید',
     'حمل‌ونقل',
+    'قبوض و اشتراک',
+    'درمان و سلامت',
+    'آموزش',
+    'پوشاک',
+    'تفریح',
+    'هدیه و خیریه',
     'سایر',
   ];
 
@@ -50,6 +53,7 @@
   var moneyFormatter = new Intl.NumberFormat('fa-IR', { maximumFractionDigits: 0 });
 
   function money(value) {
+    if (state.prefs.hideAmounts) return '••••••';
     return moneyFormatter.format(value);
   }
 
@@ -239,6 +243,11 @@
   function normalize(value) {
     var raw = value || {};
     return {
+      budgets: raw.budgets && typeof raw.budgets === 'object' ? raw.budgets : {},
+      goals: Array.isArray(raw.goals) ? raw.goals : [],
+      accounts: Array.isArray(raw.accounts) ? raw.accounts : [],
+      bills: Array.isArray(raw.bills) ? raw.bills : [],
+      prefs: Object.assign({ hideAmounts: false }, raw.prefs || {}),
       shopping: Array.isArray(raw.shopping) ? raw.shopping : [],
       projects: Array.isArray(raw.projects)
         ? raw.projects.map(function (project) {
@@ -282,7 +291,8 @@
   /* ------------------------------------------------------------------ */
 
   var state = load();
-  var tab = 'daily';
+  var tab = 'dashboard';
+  var txFilter = 'all';
   var projectFilter = 'all';
   var projectFormOpen = false;
   var monthCursor = currentJalali();
@@ -304,6 +314,17 @@
     txAmount: '',
     txCategory: INCOME_CATEGORIES[0],
     txDate: todayISO(),
+    goalTitle: '',
+    goalTarget: '',
+    goalDue: '',
+    accountTitle: '',
+    accountAmount: '',
+    accountKind: 'asset',
+    billTitle: '',
+    billAmount: '',
+    billDay: '1',
+    budgetCategory: EXPENSE_CATEGORIES[0],
+    budgetAmount: '',
     productTitle: '',
     productUnit: '',
   };
@@ -824,6 +845,531 @@
   /* روزمره                                                              */
   /* ------------------------------------------------------------------ */
 
+  var CHART_COLORS = [
+    '#2f5bff', '#7c5cff', '#f79009', '#12b76a', '#ec4899',
+    '#0ea5a5', '#f04438', '#8b8fa3', '#6366f1', '#0ba5ec',
+  ];
+
+  var ICONS = {
+    wallet:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="6" width="17" height="13" rx="3.5"/><path d="M3.5 10h17"/><circle cx="16.5" cy="14.5" r="1.3" fill="currentColor" stroke="none"/></svg>',
+    income:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M7 14l5 5 5-5"/></svg>',
+    expense:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M7 10l5-5 5 5"/></svg>',
+    net:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16"/><path d="M8 19v-5M12.5 19V9M17 19v-7"/></svg>',
+    flag:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 21V4"/><path d="M6 5h9.5l-1.4 3.4L15.5 12H6"/></svg>',
+    spark:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9Z"/></svg>',
+  };
+
+  function monthKeyOf(parts) {
+    return parts.jy + '-' + String(parts.jm).padStart(2, '0');
+  }
+
+  function greetingText() {
+    var hour = new Date().getHours();
+    if (hour < 5) return 'شب بخیر';
+    if (hour < 12) return 'صبح بخیر';
+    if (hour < 17) return 'ظهر بخیر';
+    if (hour < 21) return 'عصر بخیر';
+    return 'شب بخیر';
+  }
+
+  function displayName() {
+    if (cloud.user && cloud.user.email) return String(cloud.user.email).split('@')[0];
+    return 'دوست من';
+  }
+
+  function categoryColor(name) {
+    var index = EXPENSE_CATEGORIES.indexOf(name);
+    if (index < 0) index = EXPENSE_CATEGORIES.length;
+    return CHART_COLORS[index % CHART_COLORS.length];
+  }
+
+  function expenseByCategory(list) {
+    var map = {};
+    list.forEach(function (tx) {
+      if (tx.kind !== 'expense') return;
+      var name = tx.category || 'سایر';
+      map[name] = (map[name] || 0) + tx.amount;
+    });
+    var rows = Object.keys(map)
+      .map(function (name) {
+        return { name: name, total: map[name], color: categoryColor(name) };
+      })
+      .sort(function (a, b) { return b.total - a.total; });
+    var total = rows.reduce(function (acc, row) { return acc + row.total; }, 0);
+    rows.forEach(function (row) {
+      row.percent = total ? Math.round((row.total / total) * 100) : 0;
+    });
+    return rows;
+  }
+
+  function accountTotals() {
+    var assets = state.accounts.filter(function (item) { return item.kind !== 'debt'; });
+    var debts = state.accounts.filter(function (item) { return item.kind === 'debt'; });
+    var assetsTotal = sum(assets);
+    var debtsTotal = sum(debts);
+    return { assets: assets, debts: debts, assetsTotal: assetsTotal, debtsTotal: debtsTotal, net: assetsTotal - debtsTotal };
+  }
+
+  function netWorth() {
+    return accountTotals().net;
+  }
+
+  function donutHTML(rows, total) {
+    if (!rows.length || !total) return '<p class="empty">برای این ماه هزینه‌ای ثبت نشده.</p>';
+    var radius = 54;
+    var circumference = 2 * Math.PI * radius;
+    var offset = 0;
+    var segments = rows
+      .map(function (row) {
+        var length = (row.total / total) * circumference;
+        var segment =
+          '<circle cx="80" cy="80" r="' + radius + '" fill="none" stroke="' + row.color +
+          '" stroke-width="25" stroke-dasharray="' + Math.max(length - 1.4, 0).toFixed(1) + ' ' +
+          circumference.toFixed(1) + '" stroke-dashoffset="' + (-offset).toFixed(1) +
+          '" transform="rotate(-90 80 80)"/>';
+        offset += length;
+        return segment;
+      })
+      .join('');
+
+    return (
+      '<svg class="donut" viewBox="0 0 160 160" role="img" aria-label="نمودار هزینه">' +
+      segments +
+      '<circle cx="80" cy="80" r="41" fill="none" stroke="#eef0f6" stroke-width="1"/>' +
+      '<text x="80" y="74" text-anchor="middle" class="donut-label">هزینه</text>' +
+      '<text x="80" y="94" text-anchor="middle" class="donut-value">' + money(total) + '</text>' +
+      '</svg>'
+    );
+  }
+
+  function legendHTML(rows) {
+    return (
+      '<ul class="legend">' +
+      rows
+        .map(function (row) {
+          return (
+            '<li><span class="dot" style="background:' + row.color + '"></span>' +
+            '<span class="legend-name">' + esc(row.name) + '</span>' +
+            '<span class="legend-pct">' + fa(row.percent) + '٪</span>' +
+            '<span class="legend-amount">' + money(row.total) + '</span></li>'
+          );
+        })
+        .join('') +
+      '</ul>'
+    );
+  }
+
+  function trendHTML(jy, jm) {
+    var months = [];
+    for (var i = 5; i >= 0; i -= 1) months.push(shiftMonth(jy, jm, -i));
+
+    var data = months.map(function (month) {
+      var list = monthTransactions(state.transactions, month.jy, month.jm);
+      return {
+        label: MONTHS[month.jm - 1],
+        income: sum(list.filter(function (tx) { return tx.kind === 'income'; })),
+        expense: sum(list.filter(function (tx) { return tx.kind === 'expense'; })),
+      };
+    });
+
+    var max = Math.max.apply(
+      null,
+      data.map(function (row) { return Math.max(row.income, row.expense); }).concat([1]),
+    );
+
+    return (
+      '<div class="trend">' +
+      '<div class="trend-cols">' +
+      data
+        .map(function (row) {
+          var incomeHeight = Math.max(3, Math.round((row.income / max) * 100));
+          var expenseHeight = Math.max(3, Math.round((row.expense / max) * 100));
+          return (
+            '<div class="trend-col" title="درآمد ' + money(row.income) + ' · هزینه ' + money(row.expense) + '">' +
+            '<div class="trend-bars">' +
+            '<span class="tb income" style="height:' + incomeHeight + '%"></span>' +
+            '<span class="tb expense" style="height:' + expenseHeight + '%"></span>' +
+            '</div><span class="trend-month">' + row.label + '</span></div>'
+          );
+        })
+        .join('') +
+      '</div>' +
+      '<div class="trend-legend">' +
+      '<span><i class="dot" style="background:#2f5bff"></i>درآمد</span>' +
+      '<span><i class="dot" style="background:#7c5cff"></i>هزینه</span></div></div>'
+    );
+  }
+
+  function attentionItems() {
+    var today = todayISO();
+    var monthKey = monthKeyOf(currentJalali());
+    var out = [];
+
+    state.tasks.forEach(function (task) {
+      if (task.done || task.date >= today) return;
+      out.push({
+        title: task.title,
+        sub: 'کار عقب‌افتاده',
+        tag: 'عقب‌افتاده',
+        tone: 'red',
+        when: formatDate(task.date),
+        tab: 'daily',
+        order: 0,
+      });
+    });
+
+    state.projects.forEach(function (project) {
+      if (!project.due || project.status === 'done') return;
+      if (daysUntil(project.due) > 7) return;
+      out.push({
+        title: project.title,
+        sub: project.client || 'بدون مشتری',
+        tag: 'سررسید نزدیک',
+        tone: 'purple',
+        when: dueLabel(project.due),
+        tab: 'projects',
+        order: 1,
+      });
+    });
+
+    state.bills.forEach(function (bill) {
+      if (bill.paid && bill.paid[monthKey]) return;
+      out.push({
+        title: bill.title,
+        sub: 'قسط یا قبض پرداخت‌نشده',
+        tag: 'پرداخت‌نشده',
+        tone: 'orange',
+        when: 'روز ' + fa(bill.day || 1),
+        tab: 'finance',
+        order: 2,
+      });
+    });
+
+    out.sort(function (a, b) { return a.order - b.order; });
+    return out.slice(0, 4);
+  }
+
+  function budgetsPanelHTML(monthTx) {
+    var rows = EXPENSE_CATEGORIES.map(function (name) {
+      return {
+        name: name,
+        limit: Number(state.budgets[name]) || 0,
+        spent: sum(monthTx.filter(function (tx) {
+          return tx.kind === 'expense' && tx.category === name;
+        })),
+      };
+    }).filter(function (row) { return row.limit > 0; });
+
+    var body = rows.length
+      ? '<ul class="budget-list">' +
+        rows
+          .map(function (row) {
+            var percent = Math.min(100, Math.round((row.spent / row.limit) * 100));
+            var over = row.spent > row.limit;
+            return (
+              '<li class="budget"><div class="budget-top"><span class="budget-name">' + esc(row.name) + '</span>' +
+              '<span class="budget-num">' + money(row.spent) + ' / ' + money(row.limit) + '</span></div>' +
+              '<div class="bar' + (over ? ' over' : '') + '"><span style="width:' + percent + '%"></span></div>' +
+              '<div class="budget-foot"><span class="muted tiny">' +
+              (over ? 'از سقف رد شدی' : money(row.limit - row.spent) + ' تومان مانده') + '</span>' +
+              '<button type="button" class="icon-btn tiny" data-act="remove-budget" data-id="' + esc(row.name) +
+              '" aria-label="حذف بودجه">×</button></div></li>'
+            );
+          })
+          .join('') +
+        '</ul>'
+      : '<p class="empty">برای دسته‌ای سقف تعیین نکردی.</p>';
+
+    var options = EXPENSE_CATEGORIES.map(function (name) {
+      return '<option value="' + esc(name) + '"' +
+        (draft.budgetCategory === name ? ' selected' : '') + '>' + esc(name) + '</option>';
+    }).join('');
+
+    return (
+      '<div class="panel-head"><h3>بودجهٔ این ماه</h3>' +
+      '<span class="muted tiny">' + fa(rows.length) + ' سقف</span></div>' +
+      body +
+      '<form class="mini-form" data-act="set-budget">' +
+      '<select data-draft="budgetCategory" aria-label="دستهٔ بودجه">' + options + '</select>' +
+      '<input type="number" min="0" inputmode="numeric" data-draft="budgetAmount" placeholder="سقف (تومان)" aria-label="سقف بودجه">' +
+      '<button type="submit" class="btn ghost small">تعیین</button></form>'
+    );
+  }
+
+  function trendPanelHTML(jy, jm) {
+    return (
+      '<div class="panel-head"><h3>روند شش ماه</h3>' +
+      '<span class="muted tiny">درآمد و هزینه</span></div>' + trendHTML(jy, jm)
+    );
+  }
+
+  function accountsPanelHTML() {
+    var totals = accountTotals();
+    var rows = state.accounts.length
+      ? '<ul class="row-list tight">' +
+        state.accounts
+          .map(function (item) {
+            var isDebt = item.kind === 'debt';
+            return (
+              '<li class="row"><span class="row-icon ' + (isDebt ? 'red' : 'green') + '">' + ICONS.wallet + '</span>' +
+              '<div class="row-main"><span class="row-title">' + esc(item.title) + '</span>' +
+              '<span class="row-sub">' + (isDebt ? 'بدهی' : 'دارایی') + '</span></div>' +
+              '<span class="row-amount ' + (isDebt ? 'expense' : 'income') + '">' + money(item.amount) + '</span>' +
+              '<button type="button" class="icon-btn tiny" data-act="remove-account" data-id="' + item.id +
+              '" aria-label="حذف">×</button></li>'
+            );
+          })
+          .join('') +
+        '</ul>'
+      : '<p class="empty">حساب‌ها و بدهی‌هایت را اضافه کن تا دارایی خالص حساب شود.</p>';
+
+    return (
+      '<div class="panel-head"><h3>دارایی و بدهی</h3><span class="muted tiny">خالص</span></div>' +
+      '<p class="net-value">' + money(totals.net) + ' <span>تومان</span></p>' +
+      '<div class="chip-row"><span class="chip income">دارایی ' + money(totals.assetsTotal) + '</span>' +
+      '<span class="chip expense">بدهی ' + money(totals.debtsTotal) + '</span></div>' +
+      rows +
+      '<form class="mini-form" data-act="add-account">' +
+      '<input data-draft="accountTitle" value="' + esc(draft.accountTitle) + '" placeholder="نام حساب" aria-label="نام حساب" autocomplete="off">' +
+      '<input type="number" min="0" inputmode="numeric" data-draft="accountAmount" value="' + esc(draft.accountAmount) +
+      '" placeholder="مبلغ" aria-label="مبلغ">' +
+      '<select data-draft="accountKind" aria-label="نوع">' +
+      '<option value="asset"' + (draft.accountKind === 'asset' ? ' selected' : '') + '>دارایی</option>' +
+      '<option value="debt"' + (draft.accountKind === 'debt' ? ' selected' : '') + '>بدهی</option></select>' +
+      '<button type="submit" class="btn ghost small">افزودن</button></form>'
+    );
+  }
+
+  function goalsPanelHTML() {
+    var body = state.goals.length
+      ? '<ul class="goal-list">' +
+        state.goals
+          .map(function (goal) {
+            var target = Number(goal.target) || 0;
+            var saved = Number(goal.saved) || 0;
+            var percent = target ? Math.min(100, Math.round((saved / target) * 100)) : 0;
+            return (
+              '<li class="goal"><div class="budget-top"><span class="budget-name">' + esc(goal.title) + '</span>' +
+              '<span class="budget-num">' + money(saved) + ' / ' + money(target) + '</span></div>' +
+              '<div class="bar"><span style="width:' + percent + '%"></span></div>' +
+              '<div class="budget-foot"><span class="muted tiny">' + fa(percent) + '٪ · ' +
+              (saved >= target && target ? 'رسیدی به هدف' : money(Math.max(target - saved, 0)) + ' مانده') +
+              (goal.due ? ' · ' + formatDate(goal.due) : '') + '</span>' +
+              '<button type="button" class="icon-btn tiny" data-act="remove-goal" data-id="' + goal.id +
+              '" aria-label="حذف هدف">×</button></div>' +
+              '<form class="deposit-form" data-act="goal-deposit" data-id="' + goal.id + '">' +
+              '<input type="number" min="0" inputmode="numeric" name="amount" placeholder="مبلغ واریز">' +
+              '<button type="submit" class="btn ghost small">واریز</button></form></li>'
+            );
+          })
+          .join('') +
+        '</ul>'
+      : '<p class="empty">هدف پس‌انداز تعریف کن؛ مثلاً صندوق اضطراری یا سفر.</p>';
+
+    return (
+      '<div class="panel-head"><h3>اهداف پس‌انداز</h3><span class="muted tiny">' + fa(state.goals.length) + ' هدف</span></div>' +
+      body +
+      '<form class="mini-form" data-act="add-goal">' +
+      '<input data-draft="goalTitle" value="' + esc(draft.goalTitle) + '" placeholder="نام هدف" aria-label="نام هدف" autocomplete="off">' +
+      '<input type="number" min="0" inputmode="numeric" data-draft="goalTarget" value="' + esc(draft.goalTarget) +
+      '" placeholder="مبلغ هدف" aria-label="مبلغ هدف">' +
+      '<button type="submit" class="btn ghost small">افزودن</button></form>'
+    );
+  }
+
+  function billsPanelHTML(jy, jm) {
+    var monthKey = monthKeyOf({ jy: jy, jm: jm });
+    var bills = state.bills;
+    var body = bills.length
+      ? '<ul class="row-list tight">' +
+        bills
+          .map(function (bill) {
+            var paid = !!(bill.paid && bill.paid[monthKey]);
+            return (
+              '<li class="row"><button type="button" class="check' + (paid ? ' on' : '') +
+              '" data-act="bill-paid" data-id="' + bill.id + '" aria-label="پرداخت‌شده">✓</button>' +
+              '<div class="row-main"><span class="row-title">' + esc(bill.title) + '</span>' +
+              '<span class="row-sub">روز ' + fa(bill.day || 1) + ' هر ماه</span></div>' +
+              '<span class="row-amount ' + (paid ? 'income' : 'expense') + '">' + money(bill.amount) + '</span>' +
+              '<button type="button" class="icon-btn tiny" data-act="remove-bill" data-id="' + bill.id +
+              '" aria-label="حذف">×</button></li>'
+            );
+          })
+          .join('') +
+        '</ul>'
+      : '<p class="empty">اجاره، قسط و اشتراک‌های ثابت را اینجا نگه دار.</p>';
+
+    return (
+      '<div class="panel-head"><h3>اقساط و قبوض</h3><span class="muted tiny">' + fa(bills.length) + ' مورد</span></div>' +
+      body +
+      '<form class="mini-form" data-act="add-bill">' +
+      '<input data-draft="billTitle" value="' + esc(draft.billTitle) + '" placeholder="عنوان" aria-label="عنوان قسط" autocomplete="off">' +
+      '<input type="number" min="0" inputmode="numeric" data-draft="billAmount" value="' + esc(draft.billAmount) +
+      '" placeholder="مبلغ" aria-label="مبلغ قسط">' +
+      '<input type="number" min="1" max="31" data-draft="billDay" value="' + esc(draft.billDay) +
+      '" placeholder="روز" aria-label="روز ماه" class="day-input">' +
+      '<button type="submit" class="btn ghost small">افزودن</button></form>'
+    );
+  }
+
+  function statCardHTML(tone, icon, label, value, unit, sub) {
+    return (
+      '<div class="stat"><div class="stat-top"><span class="stat-icon ' + tone + '">' + icon + '</span>' +
+      '<span class="stat-label">' + label + '</span></div>' +
+      '<div class="stat-value"><span data-count="' + value + '">' + money(value) + '</span>' +
+      (unit ? '<span class="stat-cur">' + unit + '</span>' : '') + '</div>' +
+      '<div class="stat-sub">' + sub + '</div></div>'
+    );
+  }
+
+  function dashboardHTML() {
+    var cur = currentJalali();
+    var monthTx = monthTransactions(state.transactions, cur.jy, cur.jm);
+    var income = sum(monthTx.filter(function (tx) { return tx.kind === 'income'; }));
+    var expense = sum(monthTx.filter(function (tx) { return tx.kind === 'expense'; }));
+    var balance = income - expense;
+    var incomeCount = monthTx.filter(function (tx) { return tx.kind === 'income'; }).length;
+    var expenseCount = monthTx.filter(function (tx) { return tx.kind === 'expense'; }).length;
+    var todayTasks = state.tasks.filter(function (task) { return task.date === todayISO(); });
+    var doneToday = todayTasks.filter(function (task) { return task.done; }).length;
+    var taskPercent = todayTasks.length ? Math.round((doneToday / todayTasks.length) * 100) : 0;
+    var attention = attentionItems();
+    var recent = sortByDateDesc(state.transactions).slice(0, 4);
+    var cats = expenseByCategory(monthTx);
+
+    var statsHTML =
+      '<div class="stats">' +
+      statCardHTML('blue', ICONS.wallet, 'موجودی این ماه', balance, 'تومان', 'درآمد منهای هزینه') +
+      statCardHTML('green', ICONS.income, 'درآمد', income, 'تومان', fa(incomeCount) + ' مورد ثبت‌شده') +
+      statCardHTML('orange', ICONS.expense, 'هزینه', expense, 'تومان', fa(expenseCount) + ' مورد ثبت‌شده') +
+      statCardHTML('violet', ICONS.net, 'دارایی خالص', netWorth(), 'تومان', 'دارایی منهای بدهی') +
+      '</div>';
+
+    var attentionHTML = attention.length
+      ? '<ul class="row-list">' +
+        attention
+          .map(function (item) {
+            return (
+              '<li class="row clickable" data-act="nav" data-tab="' + item.tab + '">' +
+              '<span class="row-icon ' + item.tone + '">' + ICONS.flag + '</span>' +
+              '<div class="row-main"><span class="row-title">' + esc(item.title) + '</span>' +
+              '<span class="row-sub">' + esc(item.sub) + '</span></div>' +
+              '<div class="row-end"><span class="tag ' + item.tone + '">' + esc(item.tag) + '</span>' +
+              '<span class="row-time">' + esc(item.when) + '</span></div></li>'
+            );
+          })
+          .join('') +
+        '</ul>'
+      : '<p class="empty">همه‌چیز مرتب است؛ چیزی منتظر تو نیست.</p>';
+
+    var recentHTML = recent.length
+      ? '<ul class="row-list">' +
+        recent
+          .map(function (tx) {
+            var initial = String(tx.title || '؟').trim().charAt(0);
+            return (
+              '<li class="row activity-row"><span class="avatar sm ' + tx.kind + '">' + esc(initial) + '</span>' +
+              '<div class="row-main"><span class="row-title">' + esc(tx.title) + '</span>' +
+              '<span class="row-sub">' + esc(tx.category) + ' · ' + esc(formatDate(tx.date)) + '</span></div>' +
+              '<span class="row-amount ' + tx.kind + '">' +
+              (tx.kind === 'income' ? '+' : '−') + money(tx.amount) + '</span></li>'
+            );
+          })
+          .join('') +
+        '</ul>'
+      : '<p class="empty">هنوز تراکنشی ثبت نشده.</p>';
+
+    var tasksHTML = todayTasks.length
+      ? '<ul class="row-list">' +
+        todayTasks
+          .slice(0, 5)
+          .map(function (task) {
+            return (
+              '<li class="row task-row' + (task.done ? ' done' : '') + '">' +
+              '<button type="button" class="check' + (task.done ? ' on' : '') +
+              '" data-act="toggle-daily" data-id="' + task.id + '" aria-label="تیک ' + esc(task.title) + '">✓</button>' +
+              '<div class="row-main"><span class="row-title">' + esc(task.title) + '</span>' +
+              '<span class="row-sub">' + (task.done ? 'انجام شد' : 'امروز') + '</span></div>' +
+              '<span class="tag ' + (task.done ? 'green' : 'blue') + '">' +
+              (task.done ? 'تحویل شده' : 'در جریان') + '</span></li>'
+            );
+          })
+          .join('') +
+        '</ul>'
+      : '<p class="empty">برای امروز کاری ثبت نشده.</p>';
+
+    return (
+      '<section class="section">' +
+      statsHTML +
+      '<div class="dash-grid">' +
+      '<div class="card panel"><div class="panel-head"><h3>نیازمند توجه</h3>' +
+      '<span class="count-badge">' + fa(attention.length) + '</span><span class="spacer"></span>' +
+      '<button type="button" class="link-btn" data-act="nav" data-tab="daily">همه ‹</button></div>' +
+      attentionHTML + '</div>' +
+
+      '<div class="card panel"><div class="panel-head"><h3>فعالیت اخیر</h3>' +
+      '<span class="count-badge">' + fa(recent.length) + '</span><span class="spacer"></span>' +
+      '<button type="button" class="link-btn" data-act="nav" data-tab="finance">همه ‹</button></div>' +
+      recentHTML + '</div>' +
+
+      '<div class="card panel"><div class="panel-head"><h3>کارهای امروز</h3>' +
+      '<span class="count-badge">' + fa(doneToday) + '/' + fa(todayTasks.length) + '</span><span class="spacer"></span>' +
+      '<button type="button" class="link-btn" data-act="nav" data-tab="daily">همه ‹</button></div>' +
+      '<div class="bar"><span style="width:' + taskPercent + '%"></span></div>' +
+      tasksHTML +
+      '<form class="add-row compact" data-act="add-daily">' +
+      '<input data-draft="taskTitle" value="' + esc(draft.taskTitle) +
+      '" placeholder="کار تازه برای امروز…" aria-label="کار تازه" autocomplete="off">' +
+      '<button type="submit" class="btn primary small">افزودن</button></form></div>' +
+      '</div>' +
+
+      '<div class="dash-bottom">' +
+      '<div class="card panel"><div class="panel-head"><h3>هزینه به تفکیک دسته</h3>' +
+      '<button type="button" class="link-btn" data-act="nav" data-tab="finance">همه ‹</button></div>' +
+      (cats.length
+        ? '<div class="donut-row">' + donutHTML(cats, expense) + legendHTML(cats) + '</div>'
+        : '<p class="empty">برای این ماه هزینه‌ای ثبت نشده.</p>') +
+      '</div>' +
+      '<div class="card panel">' + budgetsPanelHTML(monthTx) + '</div>' +
+      '</div>' +
+      '</section>'
+    );
+  }
+
+  function settingsHTML() {
+    return (
+      '<section class="section">' +
+      '<div class="section-head"><div><h2>تنظیمات</h2>' +
+      '<p class="sub">حریم خصوصی مبالغ، حساب ابری و افزونهٔ مرورگر.</p></div></div>' +
+      '<div class="settings-grid">' +
+      '<div class="card panel"><div class="panel-head"><h3>حریم خصوصی</h3></div>' +
+      '<div class="setting-row"><div><strong>مخفی کردن مبالغ</strong>' +
+      '<span class="muted tiny">همهٔ مبلغ‌ها با ستاره نشان داده می‌شوند</span></div>' +
+      '<button type="button" class="switch' + (state.prefs.hideAmounts ? ' on' : '') +
+      '" data-act="toggle-privacy" aria-pressed="' + (state.prefs.hideAmounts ? 'true' : 'false') +
+      '" aria-label="مخفی کردن مبالغ"><span></span></button></div>' +
+      '<p class="muted tiny">برای نمایش سریع در جمع، همین کلید یا کلید کنار منو را بزن.</p></div>' +
+
+      '<div class="card panel"><div class="panel-head"><h3>حساب ابری</h3></div>' +
+      (cloud.user
+        ? '<p class="muted">وصل به <strong dir="ltr">' + esc(cloud.user.email || '') + '</strong></p>' +
+          '<button type="button" class="btn ghost small" data-act="sync">همگام‌سازی الان</button>'
+        : '<p class="muted">الان بدون حساب کار می‌کنی؛ داده‌ها فقط روی همین دستگاه است.</p>') +
+      '</div>' +
+
+      '<div class="card panel"><div class="panel-head"><h3>افزونهٔ مرورگر</h3></div>' +
+      '<p class="muted tiny">پوشهٔ <code>extension</code> را در کروم با «Load unpacked» نصب کن تا هزینه را از هر صفحه‌ای ثبت کنی.</p>' +
+      '<a class="btn ghost small" href="https://github.com/armvnhs/kargah" target="_blank" rel="noopener">مخزن پروژه</a>' +
+      '</div></div></section>'
+    );
+  }
+
   function ringHTML(percent) {
     var radius = 26;
     var circumference = 2 * Math.PI * radius;
@@ -1091,7 +1637,7 @@
       return (
         '<div class="card live-bar offline"><span class="live-dot off"></span>' +
         '<div class="live-text"><strong>قیمت زنده وصل نیست</strong>' +
-        '<span class="muted tiny">سرور محلی را با <code>python server.py</code> اجرا کن تا قیمت‌ها خودکار خوانده شوند.</span>' +
+        '<span class="muted tiny">اتصال قیمت برقرار نیست؛ بعد از ورود دوباره امتحان کن.</span>' +
         '</div></div>'
       );
     }
@@ -1350,6 +1896,9 @@
     var income = sum(monthTx.filter(function (tx) { return tx.kind === 'income'; }));
     var expense = sum(monthTx.filter(function (tx) { return tx.kind === 'expense'; }));
     var balance = income - expense;
+    var savingsRate = income > 0 ? Math.round((balance / income) * 100) : 0;
+    var cats = expenseByCategory(monthTx);
+    var visibleTx = txFilter === 'all' ? monthTx : monthTx.filter(function (tx) { return tx.kind === txFilter; });
     var categories = txKind === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
 
     var categoryOptions = categories.map(function (name) {
@@ -1357,23 +1906,11 @@
         (draft.txCategory === name ? ' selected' : '') + '>' + esc(name) + '</option>';
     }).join('');
 
-    var byCategory = EXPENSE_CATEGORIES.map(function (name) {
-      return {
-        name: name,
-        total: sum(monthTx.filter(function (tx) {
-          return tx.kind === 'expense' && tx.category === name;
-        })),
-      };
-    })
-      .filter(function (row) { return row.total > 0; })
-      .sort(function (a, b) { return b.total - a.total; });
-    var maxCategory = byCategory.length ? byCategory[0].total : 0;
-
     var cur = currentJalali();
     var isThisMonth = jy === cur.jy && jm === cur.jm;
 
-    var txListHTML = monthTx.length
-      ? '<ul class="plain-list">' + monthTx.map(function (tx) {
+    var txListHTML = visibleTx.length
+      ? '<ul class="plain-list">' + visibleTx.map(function (tx) {
           return (
             '<li class="tx"><span class="tx-mark ' + tx.kind + '" aria-hidden="true">' +
             (tx.kind === 'income' ? '↑' : '↓') + '</span>' +
@@ -1385,28 +1922,20 @@
             '" aria-label="حذف ' + esc(tx.title) + '">×</button></li>'
           );
         }).join('') + '</ul>'
-      : '<p class="empty">در این ماه چیزی ثبت نشده.</p>';
-
-    var categoriesHTML = byCategory.length
-      ? '<div class="cats">' + byCategory.map(function (row) {
-          return (
-            '<div class="cat"><div class="cat-top"><span>' + esc(row.name) + '</span>' +
-            '<span>' + money(row.total) + '</span></div>' +
-            '<div class="bar"><span style="width:' + ((row.total / maxCategory) * 100) + '%"></span></div></div>'
-          );
-        }).join('') + '</div>'
-      : '<p class="empty">هزینه‌ای برای این ماه ثبت نشده.</p>';
+      : '<p class="empty">' + (txFilter === 'all' ? 'در این ماه چیزی ثبت نشده.' : 'تراکنشی با این فیلتر نیست.') + '</p>';
 
     return (
       '<section class="section">' +
       '<div class="section-head"><div><h2>مالی</h2>' +
-      '<p class="sub">درآمد و هزینه‌های ماه را ثبت کن تا مانده دستت باشد.</p></div>' +
+      '<p class="sub">دفترِ کل زندگی: درآمد، هزینه، بودجه، هدف و دارایی.</p></div>' +
+      '<div class="head-actions"><button type="button" class="btn ghost small" data-act="toggle-privacy">' +
+      (state.prefs.hideAmounts ? 'نمایش مبالغ' : 'مخفی کردن مبالغ') + '</button>' +
       '<div class="month-bar">' +
       '<button type="button" class="nav-btn" data-act="month" data-delta="-1" aria-label="ماه قبل">›</button>' +
       '<span class="month-title">' + esc(monthLabel(jy, jm)) + '</span>' +
       '<button type="button" class="nav-btn" data-act="month" data-delta="1" aria-label="ماه بعد">‹</button>' +
       (isThisMonth ? '' : '<button type="button" class="link-btn" data-act="this-month">این ماه</button>') +
-      '</div></div>' +
+      '</div></div></div>' +
 
       '<div class="money-row">' +
       '<div class="card money"><span class="label">درآمد</span>' +
@@ -1416,7 +1945,22 @@
       '<div class="card money"><span class="label">مانده</span>' +
       '<span class="value ' + (balance < 0 ? 'expense' : 'income') + '">' +
       '<span data-count="' + balance + '">' + money(balance) + '</span></span></div>' +
+      '<div class="card money"><span class="label">نرخ پس‌انداز</span>' +
+      '<span class="value ' + (savingsRate < 0 ? 'expense' : 'income') + '">' + fa(savingsRate) + '٪</span>' +
+      '<span class="muted tiny">از درآمد این ماه</span></div>' +
       '</div>' +
+
+      '<div class="fin-grid">' +
+      '<div class="card panel">' + trendPanelHTML(jy, jm) + '</div>' +
+      '<div class="card panel">' + accountsPanelHTML() + '</div>' +
+      '</div>' +
+
+      '<div class="fin-grid">' +
+      '<div class="card panel">' + goalsPanelHTML() + '</div>' +
+      '<div class="card panel">' + billsPanelHTML(jy, jm) + '</div>' +
+      '</div>' +
+
+      '<div class="card panel">' + budgetsPanelHTML(monthTx) + '</div>' +
 
       '<form class="card tx-form" data-act="add-tx">' +
       '<div class="kind-switch" role="group" aria-label="نوع تراکنش">' +
@@ -1442,10 +1986,17 @@
 
       '<div class="panels">' +
       '<div class="card panel"><div class="panel-head"><h3>تراکنش‌های ' +
-      esc(monthLabel(jy, jm)) + '</h3>' +
-      '<span class="muted tiny">' + fa(monthTx.length) + ' مورد</span></div>' + txListHTML + '</div>' +
-      '<div class="card panel"><div class="panel-head"><h3>هزینه به تفکیک دسته</h3></div>' +
-      categoriesHTML + '</div>' +
+      esc(monthLabel(jy, jm)) + '</h3><span class="spacer"></span>' +
+      '<div class="segmented" role="group" aria-label="فیلتر تراکنش">' +
+      '<button type="button" class="' + (txFilter === 'all' ? 'on' : '') + '" data-act="tx-filter" data-filter="all">همه</button>' +
+      '<button type="button" class="' + (txFilter === 'income' ? 'on' : '') + '" data-act="tx-filter" data-filter="income">درآمد</button>' +
+      '<button type="button" class="' + (txFilter === 'expense' ? 'on' : '') + '" data-act="tx-filter" data-filter="expense">هزینه</button>' +
+      '</div><span class="muted tiny">' + fa(visibleTx.length) + ' مورد</span></div>' + txListHTML + '</div>' +
+      '<div class="card panel"><div class="panel-head"><h3>هزینه به تفکیک دسته</h3>' +
+      '<span class="muted tiny">' + fa(cats.length) + ' دسته</span></div>' +
+      (cats.length
+        ? '<div class="donut-row">' + donutHTML(cats, expense) + legendHTML(cats) + '</div>'
+        : '<p class="empty">هزینه‌ای برای این ماه ثبت نشده.</p>') + '</div>' +
       '</div>' +
       '</section>'
     );
@@ -1454,67 +2005,6 @@
   /* ------------------------------------------------------------------ */
   /* خرید                                                                */
   /* ------------------------------------------------------------------ */
-
-  function shoppingHTML() {
-    var items = state.shopping;
-    var remaining = items.filter(function (item) { return !item.done; });
-    var bought = items.filter(function (item) { return item.done; });
-    var percent = items.length ? Math.round((bought.length / items.length) * 100) : 0;
-
-    function itemRow(item, index) {
-      return (
-        '<div class="item ' + (item.done ? 'done' : '') + '" style="animation-delay:' +
-        Math.min(index * 35, 210) + 'ms">' +
-        '<button type="button" class="check ' + (item.done ? 'on' : '') +
-        '" data-act="toggle-item" data-id="' + item.id + '" aria-label="' +
-        (item.done ? 'برگردان: ' : 'خریدم: ') + esc(item.title) + '">✓</button>' +
-        '<span class="item-title">' + esc(item.title) + '</span>' +
-        '<span class="spacer"></span>' +
-        (item.qty ? '<span class="qty">' + esc(item.qty) + '</span>' : '') +
-        '<button type="button" class="icon-btn" data-act="remove-item" data-id="' + item.id +
-        '" aria-label="حذف ' + esc(item.title) + '">×</button>' +
-        '</div>'
-      );
-    }
-
-    return (
-      '<section class="section">' +
-      '<div class="section-head"><div><h2>لیست خرید</h2>' +
-      '<p class="sub">خریدهای سریع روزانه؛ هر چیزی که لازم داری بنویس.</p></div>' +
-      (items.length
-        ? '<span class="pill on">' + fa(bought.length) + ' از ' + fa(items.length) + ' خریداری شد</span>'
-        : '') +
-      '</div>' +
-
-      '<form class="card add-row" data-act="add-item">' +
-      '<input data-draft="shoppingTitle" value="' + esc(draft.shoppingTitle) +
-      '" placeholder="چی لازم داری؟ مثلاً کاغذ A3" aria-label="نام کالا" autocomplete="off">' +
-      '<input class="qty-input" data-draft="shoppingQty" value="' + esc(draft.shoppingQty) +
-      '" placeholder="تعداد" aria-label="تعداد" autocomplete="off">' +
-      '<button type="submit" class="btn primary">افزودن</button>' +
-      '</form>' +
-
-      (items.length
-        ? '<div class="card progress-card"><div class="progress-top"><span>پیشرفت خرید</span>' +
-          '<span>' + fa(percent) + '٪</span></div><div class="bar"><span style="width:' +
-          percent + '%"></span></div></div>'
-        : '') +
-
-      (items.length === 0
-        ? '<p class="card empty">لیست خالی است. اولین مورد را از بالا اضافه کن.</p>'
-        : '<div class="card list">' + remaining.map(itemRow).join('') +
-          (bought.length
-            ? '<p class="done-divider">خریداری‌شده</p>' + bought.map(itemRow).join('')
-            : '') +
-          '</div>') +
-
-      (bought.length
-        ? '<div class="section-foot"><button type="button" class="btn ghost" data-act="clear-done">پاک کردن ' +
-          fa(bought.length) + ' مورد خریداری‌شده</button></div>'
-        : '') +
-      '</section>'
-    );
-  }
 
   /* ------------------------------------------------------------------ */
   /* تقویم شمسی                                                          */
@@ -1608,23 +2098,33 @@
   /* ------------------------------------------------------------------ */
 
   function updateTabs() {
-    var buttons = tabsEl.querySelectorAll('.tab');
-    var active = null;
-    for (var i = 0; i < buttons.length; i += 1) {
-      var isActive = buttons[i].dataset.tab === tab;
-      buttons[i].classList.toggle('active', isActive);
-      if (isActive) {
-        active = buttons[i];
-        buttons[i].setAttribute('aria-current', 'page');
-      } else {
-        buttons[i].removeAttribute('aria-current');
-      }
+    var buttons = tabsEl.querySelectorAll('[data-tab]');
+    Array.prototype.forEach.call(buttons, function (button) {
+      var isActive = button.dataset.tab === tab;
+      button.classList.toggle('active', isActive);
+      if (isActive) button.setAttribute('aria-current', 'page');
+      else button.removeAttribute('aria-current');
+    });
+  }
+
+  function updateChrome() {
+    var switchEl = document.getElementById('privacy-switch');
+    if (switchEl) {
+      switchEl.classList.toggle('on', !!state.prefs.hideAmounts);
+      switchEl.setAttribute('aria-pressed', state.prefs.hideAmounts ? 'true' : 'false');
     }
 
-    var glow = document.getElementById('tab-glow');
-    if (active && glow) {
-      glow.style.width = active.offsetWidth + 'px';
-      glow.style.transform = 'translateX(' + active.offsetLeft + 'px)';
+    var greet = document.getElementById('greet-title');
+    if (greet) greet.textContent = greetingText() + '، ' + displayName() + ' 👋';
+
+    var bell = document.getElementById('bell-count');
+    if (bell) {
+      var monthKey = monthKeyOf(currentJalali());
+      var overdue = state.tasks.filter(function (task) { return !task.done && task.date < todayISO(); }).length;
+      var unpaid = state.bills.filter(function (bill) { return !(bill.paid && bill.paid[monthKey]); }).length;
+      var count = overdue + unpaid;
+      bell.hidden = !count;
+      bell.textContent = fa(count);
     }
   }
 
@@ -1632,8 +2132,9 @@
     if (tab === 'buy') return buyHTML();
     if (tab === 'projects') return projectsHTML();
     if (tab === 'finance') return financeHTML();
-    if (tab === 'shopping') return shoppingHTML();
-    return dailyHTML();
+    if (tab === 'settings') return settingsHTML();
+    if (tab === 'daily') return dailyHTML();
+    return dashboardHTML();
   }
 
   function animateCounters() {
@@ -1657,6 +2158,7 @@
 
   function render() {
     updateTabs();
+    updateChrome();
     view.innerHTML = screenHTML();
     renderOverlay();
     animateCounters();
@@ -1673,6 +2175,23 @@
     toastTimer = setTimeout(function () {
       toastRoot.innerHTML = '';
     }, 2200);
+  }
+
+  function togglePrivacy() {
+    state.prefs.hideAmounts = !state.prefs.hideAmounts;
+    save();
+    render();
+    toast(state.prefs.hideAmounts ? 'مبالغ مخفی شدند' : 'مبالغ نمایش داده می‌شوند');
+  }
+
+  function syncNow() {
+    if (!cloud.enabled || !cloud.user) {
+      toast('برای همگام‌سازی وارد حساب شو');
+      return;
+    }
+    cloudSaveNow();
+    cloudRefreshPrices();
+    toast('همگام شد');
   }
 
   function findProject(id) {
@@ -1730,6 +2249,55 @@
     switch (act) {
       case 'nav':
         tab = button.dataset.tab;
+        render();
+        if (tab === 'buy') loadLive(true);
+        break;
+
+      case 'toggle-privacy':
+        togglePrivacy();
+        break;
+
+      case 'sync':
+        syncNow();
+        break;
+
+      case 'tx-filter':
+        txFilter = button.dataset.filter;
+        render();
+        break;
+
+      case 'remove-budget':
+        delete state.budgets[id];
+        save();
+        render();
+        break;
+
+      case 'remove-account':
+        state.accounts = state.accounts.filter(function (item) { return item.id !== id; });
+        save();
+        render();
+        break;
+
+      case 'remove-goal':
+        state.goals = state.goals.filter(function (goal) { return goal.id !== id; });
+        save();
+        render();
+        break;
+
+      case 'remove-bill':
+        state.bills = state.bills.filter(function (bill) { return bill.id !== id; });
+        save();
+        render();
+        break;
+
+      case 'bill-paid':
+        var billMonth = monthKeyOf(monthCursor);
+        state.bills.forEach(function (bill) {
+          if (bill.id !== id) return;
+          bill.paid = bill.paid || {};
+          bill.paid[billMonth] = !bill.paid[billMonth];
+        });
+        save();
         render();
         break;
 
@@ -2125,7 +2693,237 @@
       render();
       focusField('txTitle');
       toast('ثبت شد');
+      return;
     }
+
+    if (act === 'set-budget') {
+      var budgetLimit = Number(draft.budgetAmount);
+      if (!budgetLimit) return;
+      state.budgets[draft.budgetCategory] = budgetLimit;
+      draft.budgetAmount = '';
+      save();
+      render();
+      toast('سقف بودجه ثبت شد');
+      return;
+    }
+
+    if (act === 'add-account') {
+      var accountTitle = draft.accountTitle.trim();
+      var accountAmount = Number(draft.accountAmount);
+      if (!accountTitle || !accountAmount) return;
+      state.accounts.push({
+        id: uid(),
+        title: accountTitle,
+        amount: accountAmount,
+        kind: draft.accountKind === 'debt' ? 'debt' : 'asset',
+      });
+      draft.accountTitle = '';
+      draft.accountAmount = '';
+      save();
+      render();
+      toast('حساب اضافه شد');
+      return;
+    }
+
+    if (act === 'add-goal') {
+      var newGoalTitle = draft.goalTitle.trim();
+      var newGoalTarget = Number(draft.goalTarget);
+      if (!newGoalTitle || !newGoalTarget) return;
+      state.goals.push({
+        id: uid(),
+        title: newGoalTitle,
+        target: newGoalTarget,
+        saved: 0,
+        due: draft.goalDue || '',
+        createdAt: Date.now(),
+      });
+      draft.goalTitle = '';
+      draft.goalTarget = '';
+      save();
+      render();
+      toast('هدف ساخته شد');
+      return;
+    }
+
+    if (act === 'goal-deposit') {
+      var depositInput = form.querySelector('input[name="amount"]');
+      var depositAmount = depositInput ? Number(depositInput.value) : 0;
+      if (!depositAmount) return;
+      state.goals.forEach(function (goal) {
+        if (goal.id === form.dataset.id) {
+          goal.saved = (Number(goal.saved) || 0) + depositAmount;
+        }
+      });
+      save();
+      render();
+      toast('واریز ثبت شد');
+      return;
+    }
+
+    if (act === 'add-bill') {
+      var billTitle = draft.billTitle.trim();
+      var billAmount = Number(draft.billAmount);
+      if (!billTitle || !billAmount) return;
+      state.bills.push({
+        id: uid(),
+        title: billTitle,
+        amount: billAmount,
+        day: Math.min(31, Math.max(1, Number(draft.billDay) || 1)),
+        paid: {},
+      });
+      draft.billTitle = '';
+      draft.billAmount = '';
+      save();
+      render();
+      toast('قسط اضافه شد');
+      return;
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* نوار بالا، جستجو و پل افزونه                                          */
+  /* ------------------------------------------------------------------ */
+
+  document.addEventListener('click', function (event) {
+    if (event.target.closest('#view')) return;
+    var control = event.target.closest('[data-act]');
+    if (!control) return;
+    var act = control.dataset.act;
+    if (act === 'toggle-privacy') {
+      togglePrivacy();
+    } else if (act === 'sync') {
+      syncNow();
+    } else if (act === 'nav') {
+      tab = control.dataset.tab;
+      render();
+      if (tab === 'buy') loadLive(true);
+    } else if (act === 'collapse') {
+      document.querySelector('.app').classList.toggle('compact');
+    }
+  });
+
+  var searchInput = document.getElementById('side-search');
+  var searchBox = document.getElementById('search-results');
+  var searchItems = [];
+
+  function searchMatches(term) {
+    var query = term.trim();
+    if (!query) return [];
+    var results = [];
+
+    state.transactions.forEach(function (tx) {
+      if (String(tx.title).indexOf(query) < 0) return;
+      results.push({
+        tab: 'finance',
+        title: tx.title,
+        sub: 'تراکنش · ' + (tx.category || '') + ' · ' + formatDate(tx.date),
+        amount: (tx.kind === 'income' ? '+' : '−') + money(tx.amount),
+      });
+    });
+
+    state.tasks.forEach(function (task) {
+      if (String(task.title).indexOf(query) < 0) return;
+      results.push({ tab: 'daily', title: task.title, sub: 'کار روزمره' });
+    });
+
+    state.projects.forEach(function (project) {
+      if (String(project.title).indexOf(query) < 0) return;
+      results.push({ tab: 'projects', title: project.title, sub: 'پروژه' });
+    });
+
+    state.goals.forEach(function (goal) {
+      if (String(goal.title).indexOf(query) < 0) return;
+      results.push({ tab: 'finance', title: goal.title, sub: 'هدف پس‌انداز' });
+    });
+
+    state.bills.forEach(function (bill) {
+      if (String(bill.title).indexOf(query) < 0) return;
+      results.push({ tab: 'finance', title: bill.title, sub: 'قسط یا قبض' });
+    });
+
+    state.shopping.forEach(function (item) {
+      if (String(item.title).indexOf(query) < 0) return;
+      results.push({ tab: 'buy', title: item.title, sub: 'لیست خرید' });
+    });
+
+    return results.slice(0, 6);
+  }
+
+  function renderSearch() {
+    if (!searchBox) return;
+    var term = searchInput ? searchInput.value : '';
+    searchItems = searchMatches(term);
+    if (!term.trim()) {
+      searchBox.hidden = true;
+      searchBox.innerHTML = '';
+      return;
+    }
+    searchBox.hidden = false;
+    searchBox.innerHTML = searchItems.length
+      ? searchItems
+          .map(function (item, index) {
+            return (
+              '<button type="button" class="search-item" data-index="' + index + '">' +
+              '<span class="search-item-main"><span class="search-item-title">' + esc(item.title) + '</span>' +
+              '<span class="search-item-sub">' + esc(item.sub) + '</span></span>' +
+              (item.amount ? '<span class="search-item-amount">' + item.amount + '</span>' : '') +
+              '</button>'
+            );
+          })
+          .join('')
+      : '<p class="search-empty">چیزی پیدا نشد.</p>';
+  }
+
+  if (searchInput) {
+    searchInput.addEventListener('input', renderSearch);
+    searchInput.addEventListener('focus', renderSearch);
+  }
+
+  if (searchBox) {
+    searchBox.addEventListener('click', function (event) {
+      var button = event.target.closest('[data-index]');
+      if (!button) return;
+      var item = searchItems[Number(button.dataset.index)];
+      if (!item) return;
+      tab = item.tab;
+      searchInput.value = '';
+      searchBox.hidden = true;
+      render();
+      if (tab === 'buy') loadLive(true);
+    });
+  }
+
+  document.addEventListener('click', function (event) {
+    if (!searchBox || event.target.closest('.side-search-wrap')) return;
+    searchBox.hidden = true;
+  });
+
+  window.addEventListener('message', function (event) {
+    var data = event.data;
+    if (!data || data.type !== 'kargah:quick-add') return;
+    var items = Array.isArray(data.items) ? data.items : [];
+    var added = 0;
+
+    items.forEach(function (entry) {
+      var amount = Number(entry && entry.amount);
+      var title = entry && entry.title ? String(entry.title).trim() : '';
+      if (!title || !amount) return;
+      state.transactions.unshift({
+        id: uid(),
+        kind: entry.kind === 'income' ? 'income' : 'expense',
+        title: title,
+        amount: amount,
+        category: entry.category || (entry.kind === 'income' ? INCOME_CATEGORIES[0] : EXPENSE_CATEGORIES[0]),
+        date: entry.date || todayISO(),
+        createdAt: Date.now(),
+      });
+      added += 1;
+    });
+
+    if (!added) return;
+    save();
+    render();
+    toast(fa(added) + ' تراکنش از افزونه ثبت شد');
   });
 
   window.addEventListener('resize', updateTabs);
@@ -2142,10 +2940,5 @@
   document.getElementById('today-line').textContent = formatToday();
   render();
   if (cloud.enabled) cloudBoot();
-  else loadLive(true);
-
-  setInterval(function () {
-    if (cloud.enabled) return;
-    if (tab === 'buy' || tab === 'daily') loadLive(true);
-  }, 20000);
+  loadLive(true);
 })();
